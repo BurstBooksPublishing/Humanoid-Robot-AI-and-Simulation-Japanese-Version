@@ -1,0 +1,50 @@
+joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    lower_body_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+lower_body_trajectory_controller:
+  ros__parameters:
+    joints:  # 下半身12関節
+      - left_hip_pitch
+      - left_hip_roll
+      - left_hip_yaw
+      - left_knee
+      - left_ankle_pitch
+      - left_ankle_roll
+      - right_hip_pitch
+      - right_hip_roll
+      - right_hip_yaw
+      - right_knee
+      - right_ankle_pitch
+      - right_ankle_roll
+
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+
+    state_publish_rate: 100.0  # 状態配信周波数 [Hz]
+    action_monitor_rate: 20.0  # アクション監視周波数 [Hz]
+
+    allow_partial_joints_goal: false  # 全関節必須
+    open_loop_control: false          # フィードバック有効
+
+    constraints:
+      stopped_velocity_tolerance: 0.01  # [rad/s]
+      goal_time: 0.5                    # ゴール到達許容時間 [s]
+
+      left_hip_pitch:     { trajectory: 0.5, goal: 0.02 }
+      left_hip_roll:      { trajectory: 0.5, goal: 0.02 }
+      left_hip_yaw:       { trajectory: 0.5, goal: 0.02 }
+      left_knee:          { trajectory: 0.5, goal: 0.02 }
+      left_ankle_pitch:   { trajectory: 0.5, goal: 0.02 }
+      left_ankle_roll:    { trajectory: 0.5, goal: 0.02 }
+      right_hip_pitch:    { trajectory: 0.5, goal: 0.02 }
+      right_hip_roll:     { trajectory: 0.5, goal: 0.02 }
+      right_hip_yaw:      { trajectory: 0.5, goal: 0.02 }
+      right_knee:         { trajectory: 0.5, goal: 0.02 }
+      right_ankle_pitch:  { trajectory: 0.5, goal: 0.02 }
+      right_ankle_roll:   { trajectory: 0.5, goal: 0.02 }
