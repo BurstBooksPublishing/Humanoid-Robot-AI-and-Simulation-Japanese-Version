@@ -1,0 +1,100 @@
+[language=C++,
+cpp
+#include <rclcpp/rclcpp.hpp>
+#include <realtime_tools/realtime_publisher.hpp>
+#include <std_msgs/msg/float64.hpp>
+#include <pthread.h>
+#include <time.h>
+#include <sched.h>
+#include <memory>
+#include <mlockall.h>
+#include <sys/mman.h>
+
+class RealtimeController : public rclcpp::Node
+{
+public:
+  explicit RealtimeController(const rclcpp::NodeOptions & options = rclcpp::NodeOptions())
+  : Node("realtime_controller", options),
+    period_ns_(1'000'000)   // 1 ms
+  {
+    rt_pub_ = std::make_unique<
+      realtime_tools::RealtimePublisher<std_msgs::msg::Float64>>(
+      this->get_node_base_interface(), "torque_cmd", 1);
+
+    // メモリロック：ページフォルト回避
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) == -1) {
+      RCLCPP_FATAL(this->get_logger(), "mlockall failed");
+      rclcpp::shutdown();
+    }
+  }
+
+  void run()
+  {
+    configureThread();
+
+    struct timespec next;
+    clock_gettime(CLOCK_MONOTONIC, &next);
+
+    while (rclcpp::ok()) {
+      next.tv_nsec += period_ns_;
+      tsNorm(next);
+      clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, nullptr);
+
+      const float tau = computeTorque();
+      publish(tau);
+    }
+  }
+
+private:
+  static constexpr size_t CPU_CORE = 1;
+  static constexpr int RT_PRIO = 80;
+
+  const long period_ns_;
+  std::unique_ptr<realtime_tools::RealtimePublisher<std_msgs::msg::Float64>> rt_pub_;
+
+  void configureThread()
+  {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(CPU_CORE, &cpuset);
+    pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+
+    sched_param param{};
+    param.sched_priority = RT_PRIO;
+    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) != 0) {
+      RCLCPP_FATAL(this->get_logger(), "pthread_setschedparam failed");
+      rclcpp::shutdown();
+    }
+  }
+
+  static void tsNorm(struct timespec & ts)
+  {
+    while (ts.tv_nsec >= 1'000'000'000L) {
+      ts.tv_nsec -= 1'000'000'000L;
+      ++ts.tv_sec;
+    }
+  }
+
+  float computeTorque()
+  {
+    // ここに決定論的制御則を実装
+    return 0.0f;
+  }
+
+  void publish(float torque)
+  {
+    if (rt_pub_->trylock()) {
+      rt_pub_->msg_.data = torque;
+      rt_pub_->unlockAndPublish();
+    }
+  }
+};
+
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<RealtimeController>();
+  node->run();
+  rclcpp::shutdown();
+  return 0;
+}
