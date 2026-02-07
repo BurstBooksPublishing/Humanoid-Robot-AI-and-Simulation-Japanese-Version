@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+import math
+import time
+import socket
+import threading
+import struct
+from dataclasses import dataclass
+from typing import List, Tuple, Optional
+
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import Twist, PoseStamped
+from std_msgs.msg import Header
+
+# -------------------- パラメータ --------------------
+D_MIN: float = 0.5      # ロボット間最小距離[m]
+K_POT: float = 2.0      # ポテンシャルゲイン
+EPS: float = 0.1        # 合意ステップサイズ
+LOOP_HZ: float = 50.0   # 制御周波数
+UDP_PORT_BASE: int = 50000
+MAX_NEIGHBOR_AGE: float = 0.2  # 隣接情報破棄閾値[s]
+
+# -------------------- データ構造 --------------------
+@dataclass
+class Neighbor:
+    role: float
+    pos: Tuple[float, float]
+    vel: Tuple[float, float]
+    stamp: float  # 受信時刻
+
+# -------------------- ROS 2 ノード --------------------
+class SwarmController(Node):
+    def __init__(self, robot_id: int) -> None:
+        super().__init__(f'swarm_controller_{robot_id}')
+        self.robot_id = robot_id
+
+        # 状態
+        self.role: float = 0.0
+        self.pos: Tuple[float, float] = (0.0, 0.0)
+        self.vel: Tuple[float, float] = (0.0, 0.0)
+
+        # 通信
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(('', UDP_PORT_BASE + self.robot_id))
+        self.sock.setblocking(False)
+
+        # 隣接リスト
+        self.neighbors: dict[int, Neighbor] = {}
+        self.lock = threading.Lock()
+
+        # ROS インターフェース
+        self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 1)
+        self.pose_sub = self.create_subscription(
+            PoseStamped, 'pose', self.pose_cb, 1)
+
+        # タイマー
+        self.timer = self.create_timer(1.0 / LOOP_HZ, self.control_loop)
+
+        # 受信スレッド
+        self.recv_thread = threading.Thread(target=self.recv_loop, daemon=True)
+        self.recv_thread.start()
+
+    # -------- コールバック --------
+    def pose_cb(self, msg: PoseStamped) -> None:
+        self.pos = (msg.pose.position.x, msg.pose.position.y)
+
+    # -------- 通信 --------
+    def broadcast_state(self) -> None:
+        """非ブロッキング送信: role, pos, vel"""
+        data = struct.pack('!Bddd', self.robot_id, self.role,
+                           self.pos[0], self.pos[1])
+        for i in range(256):  # 簡易ブロードキャスト
+            addr = ('255.255.255.255', UDP_PORT_BASE + i)
+            try:
+                self.sock.sendto(data, addr)
+            except BlockingIOError:
+                pass
+
+    def recv_loop(self) -> None:
+        while rclpy.ok():
+            try:
+                data, _ = self.sock.recvfrom(32)
+                rid, role, x, y = struct.unpack('!Bddd', data)
+                if rid == self.robot_id:
+                    continue
+                with self.lock:
+                    self.neighbors[rid] = Neighbor(
+                        role=role, pos=(x, y), vel=(0.0, 0.0),
+                        stamp=time.time())
+            except BlockingIOError:
+                time.sleep(0.001)
+
+    # -------- 制御 --------
+    def consensus_update(self, neighbors: List[Neighbor]) -> float:
+        if not neighbors:
+            return self.role
+        diff = sum(n.role - self.role for n in neighbors)
+        return self.role + EPS * diff / len(neighbors)
+
+    def potential_avoidance(self, neighbors: List[Neighbor]) -> Tuple[float, float]:
+        vx, vy = 0.0, 0.0
+        for n in neighbors:
+            dx = n.pos[0] - self.pos[0]
+            dy = n.pos[1] - self.pos[1]
+            r = math.hypot(dx, dy)
+            if 1e-3 < r < D_MIN:
+                grad = K_POT * (D_MIN - r) / r
+                vx += grad * dx
+                vy += grad * dy
+        return (vx, vy)
+
+    def compute_task_velocity(self, role: float) -> Tuple[float, float]:
+        # 例: 役割に応じた速度を生成
+        return (0.5 * math.cos(role), 0.5 * math.sin(role))
+
+    def control_loop(self) -> None:
+        now = time.time()
+        with self.lock:
+            # 古い隣接を削除
+            self.neighbors = {
+                k: v for k, v in self.neighbors.items()
+                if now - v.stamp < MAX_NEIGHBOR_AGE}
+            neighbors = list(self.neighbors.values())
+
+        # 状態送信
+        self.broadcast_state()
+
+        # 役割合意
+        self.role = self.consensus_update(neighbors)
+
+        # 速度計算
+        rep_v = self.potential_avoidance(neighbors)
+        des_v = self.compute_task_velocity(self.role)
+        cmd_v = (des_v[0] + rep_v[0], des_v[1] + rep_v[1])
+
+        # 指令送信
+        twist = Twist()
+        twist.linear.x, twist.linear.y = cmd_v
+        self.cmd_pub.publish(twist)
+
+# -------------------- メイン --------------------
+def main(args=None):
+    rclpy.init(args=args)
+    node = SwarmController(robot_id=42)  # IDは起動時引数で変更可
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    node.destroy_node()
+    rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
