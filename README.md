@@ -12,7 +12,7 @@
 - `marketing/`: Ads and press releases
 - `additional_resources/`: Extras
 
-- # ヒューマノイド・ロボット AIとシミュレーション  
+ # ヒューマノイド・ロボット AIとシミュレーション  
 ## ヒューマノイド・ロボティクスおよびAIシステム設計の完全ガイド
 
 ## Table of Contents
